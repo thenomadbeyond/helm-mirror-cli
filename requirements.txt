@@ -1,0 +1,8 @@
+# This project currently relies on the Python Standard Library.
+# No external PyPI packages are required for the core logic.
+
+# Build/Linting tools (Pinned for consistency)
+setuptools==69.0.3
+#Nuitka==4.0.5
+bandit==1.9.4
+pyinstaller==6.19.0

@@ -1,2 +1,7 @@
 __pycache__
 test/
+virtenv
+build/
+dist/
+helm-mirror.spec
+tmp/

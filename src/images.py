@@ -1,7 +1,7 @@
-
 # mirror_tool/images.py
 import subprocess
 import re
+import os
 
 
 def extract_images(rendered_yaml, tools):
@@ -35,19 +35,26 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
-def mirror_images(images, registry, prefix, tools, dry_run=False):
+def mirror_images(images, registry, prefix, tools, dry_run=False, save_dir=None):
     mirrored = []
 
     for img in images:
-        new = rewrite_image(img, registry, prefix)
-        print(f"[INFO] {img} -> {new}")
+        if save_dir is not None:
+            tar_path = save_image_as_tar(img, save_dir, tools, dry_run)
+            print(f"[INFO] {img} -> {tar_path}")
+            mirrored.append((img, tar_path))
+        else:
+            new = rewrite_image(img, registry, prefix)
+            print(f"[INFO] {img} -> {new}")
+            if not dry_run:
+                copy_image(img, new, tools)
+            mirrored.append((img, new))
 
-        if not dry_run:
-            copy_image(img, new, tools)
+    print("\n[INFO] Mirrored images summary:")
+    for src, dst in mirrored:
+        print(f"  {src} -> {dst}")
 
-        mirrored.append(new)
-
-    return mirrored
+    return [dst for _, dst in mirrored]
 
 
 def rewrite_image(image, registry, prefix):
@@ -62,6 +69,31 @@ def rewrite_image(image, registry, prefix):
         new = f"{prefix}/{new}"
 
     return f"{registry}/{new}"
+
+
+def _image_to_filename(image):
+    """Convert an image reference to a safe tar filename."""
+    safe = image.replace("/", "_").replace(":", "_")
+    return f"{safe}.tar"
+
+
+def save_image_as_tar(image, output_dir, tools, dry_run=False):
+    os.makedirs(output_dir, exist_ok=True)
+    tar_path = os.path.join(output_dir, _image_to_filename(image))
+
+    if dry_run:
+        return tar_path
+
+    if tools["copy"] == "crane":
+        subprocess.run(["crane", "pull", "--format=tarball", image, tar_path], check=True)
+    elif tools["copy"] == "docker":
+        subprocess.run(["docker", "pull", image], check=True)
+        subprocess.run(["docker", "save", image, "-o", tar_path], check=True)
+    else:
+        subprocess.run(["podman", "pull", image], check=True)
+        subprocess.run(["podman", "save", image, "-o", tar_path], check=True)
+
+    return tar_path
 
 
 def copy_image(src, dst, tools):

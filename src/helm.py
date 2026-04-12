@@ -52,3 +52,19 @@ def push_chart(chart_path, target_registry, chart_target=None):
         repo = f"oci://{repo}"
 
     run(["helm", "push", tgz, repo])
+    print(f"[INFO] Chart pushed: {tgz} -> {repo}")
+    # remove the tgz file afterwards
+    os.remove(tgz)
+
+
+def save_chart(chart_path, output_dir="."):
+    os.makedirs(output_dir, exist_ok=True)
+
+    run(["helm", "package", chart_path, "--destination", output_dir])
+
+    tgz_files = sorted(
+        [f for f in os.listdir(output_dir) if f.endswith(".tgz")],
+        key=lambda f: os.path.getmtime(os.path.join(output_dir, f)),
+    )
+    tgz = os.path.join(output_dir, tgz_files[-1])
+    print(f"[INFO] Chart saved: {tgz}")
