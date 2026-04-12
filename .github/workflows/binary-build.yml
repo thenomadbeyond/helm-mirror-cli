@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      security-events: write
 
     steps:
       - name: Checkout
@@ -25,6 +26,23 @@ jobs:
 
       - name: Build binary with PyInstaller
         run: pyinstaller --onefile -n helm-mirror src/main.py
+
+      - name: Scan binary with Trivy
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: dist/helm-mirror
+          format: sarif
+          output: trivy-binary.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+      - name: Upload Trivy binary scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-binary.sarif
+          category: trivy-binary
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
