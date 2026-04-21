@@ -17,6 +17,11 @@ def main():
     parser.add_argument("--image-list-file")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--repo-url",
+        metavar="URL",
+        help="Helm repository URL to add temporarily when --chart is just a chart name.",
+    )
+    parser.add_argument(
         "--save-images",
         action="store_true",
         help="Save images as local tar files instead of pushing to a registry.",
@@ -46,7 +51,7 @@ def main():
 
     tools = detect_tools()
 
-    chart_path = pull_chart(args.chart, args.version)
+    chart_path = pull_chart(args.chart, args.version, args.repo_url)
     rendered = render_chart(chart_path, args.values)
 
     images = extract_images(rendered, tools)
