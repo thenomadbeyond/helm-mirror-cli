@@ -13,7 +13,7 @@ def run(cmd):
     return result.stdout
 
 
-def pull_chart(chart, version=None, repo_url=None):
+def pull_chart(chart, version=None, repo_url=None, insecure=False):
     if os.path.isdir(chart):
         return chart
 
@@ -33,7 +33,10 @@ def pull_chart(chart, version=None, repo_url=None):
 
     if repo_url:
         repo_name = "tmp-repo"
-        run(["helm", "repo", "add", repo_name, repo_url])
+        add_cmd = ["helm", "repo", "add", repo_name, repo_url]
+        if insecure:
+            add_cmd.append("--insecure-skip-tls-verify")
+        run(add_cmd)
         run(["helm", "repo", "update", repo_name])
         repo_added = repo_name
         chart = f"{repo_name}/{chart}"
@@ -41,6 +44,8 @@ def pull_chart(chart, version=None, repo_url=None):
     cmd = ["helm", "pull", chart, "--untar", "--untardir", tmp]
     if version:
         cmd += ["--version", version]
+    if insecure:
+        cmd.append("--insecure-skip-tls-verify")
 
     try:
         run(cmd)
@@ -67,7 +72,7 @@ def render_chart(chart_path, values=None):
     return run(cmd)
 
 
-def push_chart(chart_path, target_registry, chart_target=None):
+def push_chart(chart_path, target_registry, chart_target=None, insecure=False):
     pkg_dir = tempfile.mkdtemp()
     run(["helm", "package", chart_path, "--destination", pkg_dir])
 
@@ -80,7 +85,10 @@ def push_chart(chart_path, target_registry, chart_target=None):
     if not repo.startswith("oci://"):
         repo = f"oci://{repo}"
 
-    run(["helm", "push", tgz, repo])
+    cmd = ["helm", "push", tgz, repo]
+    if insecure:
+        cmd.append("--insecure-skip-tls-verify")
+    run(cmd)
     print(f"[INFO] Chart pushed: {os.path.basename(tgz)} -> {repo}")
     os.remove(tgz)
 

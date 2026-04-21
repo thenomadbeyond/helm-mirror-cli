@@ -17,6 +17,17 @@ def main():
     parser.add_argument("--image-list-file")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help=(
+            "Allow insecure registries (HTTP or HTTPS with self-signed certs). "
+            "For crane: passes --insecure. "
+            "For podman: passes --tls-verify=false. "
+            "For helm: passes --insecure-skip-tls-verify. "
+            "For docker: prints a warning — configure insecure-registries in /etc/docker/daemon.json instead."
+        ),
+    )
+    parser.add_argument(
         "--repo-url",
         metavar="URL",
         help="Helm repository URL to add temporarily when --chart is just a chart name.",
@@ -51,7 +62,7 @@ def main():
 
     tools = detect_tools()
 
-    chart_path = pull_chart(args.chart, args.version, args.repo_url)
+    chart_path = pull_chart(args.chart, args.version, args.repo_url, args.insecure)
     rendered = render_chart(chart_path, args.values)
 
     images = extract_images(rendered, tools)
@@ -64,6 +75,7 @@ def main():
         tools,
         args.dry_run,
         save_dir=args.images_dir if args.save_images else None,
+        insecure=args.insecure,
     )
 
     if args.image_list_file:
@@ -72,7 +84,7 @@ def main():
     if args.save_chart:
         save_chart(chart_path, args.chart_dir)
     elif args.push_chart:
-        push_chart(chart_path, args.target_registry, args.chart_target)
+        push_chart(chart_path, args.target_registry, args.chart_target, args.insecure)
 
 
 if __name__ == "__main__":

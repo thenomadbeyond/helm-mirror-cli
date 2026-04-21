@@ -35,19 +35,19 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
-def mirror_images(images, registry, prefix, tools, dry_run=False, save_dir=None):
+def mirror_images(images, registry, prefix, tools, dry_run=False, save_dir=None, insecure=False):
     mirrored = []
 
     for img in images:
         if save_dir is not None:
-            tar_path = save_image_as_tar(img, save_dir, tools, dry_run)
+            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure)
             print(f"[INFO] {img} -> {tar_path}")
             mirrored.append((img, tar_path))
         else:
             new = rewrite_image(img, registry, prefix)
             print(f"[INFO] {img} -> {new}")
             if not dry_run:
-                copy_image(img, new, tools)
+                copy_image(img, new, tools, insecure)
             mirrored.append((img, new))
 
     print("\n[INFO] Mirrored images summary:")
@@ -77,7 +77,7 @@ def _image_to_filename(image):
     return f"{safe}.tar"
 
 
-def save_image_as_tar(image, output_dir, tools, dry_run=False):
+def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False):
     os.makedirs(output_dir, exist_ok=True)
     tar_path = os.path.join(output_dir, _image_to_filename(image))
 
@@ -85,28 +85,46 @@ def save_image_as_tar(image, output_dir, tools, dry_run=False):
         return tar_path
 
     if tools["copy"] == "crane":
-        subprocess.run(["crane", "pull", "--format=tarball", image, tar_path], check=True)
+        cmd = ["crane", "pull"]
+        if insecure:
+            cmd.append("--insecure")
+        subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True)
     elif tools["copy"] == "docker":
+        if insecure:
+            print(
+                "[WARN] --insecure has no effect for docker at the command level. "
+                "Add the registry to insecure-registries in /etc/docker/daemon.json."
+            )
         subprocess.run(["docker", "pull", image], check=True)
         subprocess.run(["docker", "save", image, "-o", tar_path], check=True)
     else:
-        subprocess.run(["podman", "pull", image], check=True)
+        tls = ["--tls-verify=false"] if insecure else []
+        subprocess.run(["podman", "pull"] + tls + [image], check=True)
         subprocess.run(["podman", "save", image, "-o", tar_path], check=True)
 
     return tar_path
 
 
-def copy_image(src, dst, tools):
+def copy_image(src, dst, tools, insecure=False):
     if tools["copy"] == "crane":
-        subprocess.run(["crane", "copy", src, dst], check=True)
+        cmd = ["crane", "copy"]
+        if insecure:
+            cmd.append("--insecure")
+        subprocess.run(cmd + [src, dst], check=True)
     elif tools["copy"] == "docker":
+        if insecure:
+            print(
+                "[WARN] --insecure has no effect for docker at the command level. "
+                "Add the registry to insecure-registries in /etc/docker/daemon.json."
+            )
         subprocess.run(["docker", "pull", src], check=True)
         subprocess.run(["docker", "tag", src, dst], check=True)
         subprocess.run(["docker", "push", dst], check=True)
     else:
-        subprocess.run(["podman", "pull", src], check=True)
+        tls = ["--tls-verify=false"] if insecure else []
+        subprocess.run(["podman", "pull"] + tls + [src], check=True)
         subprocess.run(["podman", "tag", src, dst], check=True)
-        subprocess.run(["podman", "push", dst], check=True)
+        subprocess.run(["podman", "push"] + tls + [dst], check=True)
 
 
 def write_image_list(images, path):
