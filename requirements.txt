@@ -1,5 +1,5 @@
-# This project currently relies on the Python Standard Library.
-# No external PyPI packages are required for the core logic.
+# Runtime dependencies
+pyyaml==6.0.2
 
 # Build/Linting tools (Pinned for consistency)
 setuptools==69.0.3

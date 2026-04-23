@@ -3,10 +3,64 @@ import subprocess
 import re
 import os
 
+import yaml
+
+
+def _walk_for_images(node, images):
+    """Recursively walk a parsed YAML node and collect image references.
+
+    Handles three common Helm patterns:
+    1. Standard k8s:  image: "registry/name:tag"
+    2. Nested dict:   image: {repository: ..., tag: ...}
+    3. NVIDIA/sibling: repository: ..., image: name, version: tag  (same dict level)
+    """
+    if isinstance(node, list):
+        for item in node:
+            _walk_for_images(item, images)
+    elif isinstance(node, dict):
+        repo = node.get("repository")
+        img_val = node.get("image")
+        tag = node.get("version") or node.get("tag")
+
+        if repo and isinstance(repo, str) and img_val and isinstance(img_val, str):
+            # Pattern 3: sibling repository + image [+ version/tag]
+            ref = f"{repo.rstrip('/')}/{img_val}"
+            if tag is not None:
+                ref = f"{ref}:{tag}"
+            images.add(ref)
+        elif img_val:
+            if isinstance(img_val, str) and img_val.strip():
+                # Pattern 1: image: "full/ref:tag"
+                images.add(img_val.strip())
+            elif isinstance(img_val, dict):
+                # Pattern 2: image: {repository: ..., tag: ...}
+                n_repo = img_val.get("repository")
+                n_tag = img_val.get("tag") or img_val.get("version")
+                if n_repo and isinstance(n_repo, str):
+                    ref = n_repo.rstrip("/")
+                    if n_tag is not None:
+                        ref = f"{ref}:{n_tag}"
+                    images.add(ref)
+
+        # Recurse into all nested structures
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _walk_for_images(value, images)
+
 
 def extract_images(rendered_yaml, tools):
     images = set()
 
+    # Try YAML parsing first — handles all known Helm image reference patterns
+    try:
+        docs = list(yaml.safe_load_all(rendered_yaml))
+        _walk_for_images(docs, images)
+        print("[INFO] Using YAML parsing for image extraction")
+        return images
+    except Exception as exc:
+        print(f"[WARN] YAML parsing failed ({exc}), falling back to yq/regex")
+
+    # yq fallback (standard image: "string" only)
     if tools.get("yq"):
         try:
             result = subprocess.run(
@@ -16,16 +70,15 @@ def extract_images(rendered_yaml, tools):
                 capture_output=True,
                 check=True,
             )
-
             for line in result.stdout.splitlines():
                 if line.strip():
                     images.add(line.strip().strip('"'))
-
             print("[INFO] Using yq for image extraction")
             return images
         except Exception:
             print("[WARN] yq failed, falling back to regex")
 
+    # Regex last resort
     pattern = re.compile(r"image:\s*([^\s]+)")
     for line in rendered_yaml.splitlines():
         m = pattern.search(line)
@@ -131,5 +184,3 @@ def write_image_list(images, path):
     with open(path, "w") as f:
         for img in images:
             f.write(img + "\n")
-
-
