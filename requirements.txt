@@ -5,4 +5,4 @@ pyyaml==6.0.2
 setuptools==78.1.1
 #Nuitka==4.0.5
 bandit==1.9.4
-pyinstaller==6.19.0
+pyinstaller==6.20.0
