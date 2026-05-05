@@ -11,7 +11,7 @@ RUN apk update && apk add --no-cache \
     libc-bin \
     python3 && \
     python3 -m ensurepip && \
-    pip3 install --no-cache --upgrade pip setuptools && \
+    pip3 install --no-cache-dir --upgrade pip setuptools && \
     rm -rf /var/cache/apk/*
 
 WORKDIR /app

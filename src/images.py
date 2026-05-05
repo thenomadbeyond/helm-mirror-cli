@@ -88,26 +88,77 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
-def mirror_images(images, registry, prefix, tools, dry_run=False, save_dir=None, insecure=False):
-    mirrored = []
+def _image_exists(image, tools, insecure=False):
+    """Return True when the image already exists in the registry (crane only)."""
+    if tools.get("copy") != "crane":
+        return False
+    cmd = ["crane", "manifest", image]
+    if insecure:
+        cmd.append("--insecure")
+    return subprocess.run(cmd, capture_output=True).returncode == 0
 
-    for img in images:
+
+def mirror_images(
+    images,
+    registry,
+    prefix,
+    tools,
+    dry_run=False,
+    save_dir=None,
+    insecure=False,
+    parallel=1,
+    skip_existing=False,
+):
+    succeeded = []
+    failed = []
+
+    def _process(img):
         if save_dir is not None:
             tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure)
             print(f"[INFO] {img} -> {tar_path}")
-            mirrored.append((img, tar_path))
-        else:
-            new = rewrite_image(img, registry, prefix)
-            print(f"[INFO] {img} -> {new}")
-            if not dry_run:
-                copy_image(img, new, tools, insecure)
-            mirrored.append((img, new))
+            return tar_path
 
-    print("\n[INFO] Mirrored images summary:")
-    for src, dst in mirrored:
-        print(f"  {src} -> {dst}")
+        new = rewrite_image(img, registry, prefix)
+        if skip_existing and not dry_run and _image_exists(new, tools, insecure):
+            print(f"[SKIP] {img} -> {new} (already exists)")
+            return new
+        print(f"[INFO] {img} -> {new}")
+        if not dry_run:
+            copy_image(img, new, tools, insecure)
+        return new
 
-    return [dst for _, dst in mirrored]
+    if parallel > 1:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+            future_to_img = {executor.submit(_process, img): img for img in images}
+            for future in concurrent.futures.as_completed(future_to_img):
+                img = future_to_img[future]
+                try:
+                    succeeded.append((img, future.result()))
+                except Exception as exc:
+                    print(f"[ERROR] {img}: {exc}")
+                    failed.append((img, str(exc)))
+    else:
+        for img in images:
+            try:
+                succeeded.append((img, _process(img)))
+            except Exception as exc:
+                print(f"[ERROR] {img}: {exc}")
+                failed.append((img, str(exc)))
+
+    print("\n[INFO] Summary:")
+    for src, dst in succeeded:
+        print(f"  OK   {src} -> {dst}")
+    for src, err in failed:
+        print(f"  FAIL {src}: {err}")
+
+    if failed:
+        raise RuntimeError(
+            f"{len(failed)} image(s) failed to mirror; "
+            f"{len(succeeded)} succeeded."
+        )
+
+    return [dst for _, dst in succeeded]
 
 
 def rewrite_image(image, registry, prefix):

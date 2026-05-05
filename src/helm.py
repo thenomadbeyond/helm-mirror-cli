@@ -2,6 +2,8 @@
 # mirror_tool/helm.py
 import subprocess
 import tempfile
+import shutil
+import atexit
 import os
 
 
@@ -24,10 +26,12 @@ def pull_chart(chart, version=None, repo_url=None, insecure=False):
         chart = chart.rstrip("/").rsplit("/", 1)[-1]
         print(f"[INFO] Detected repo URL — using chart name: {chart}")
 
-    # mkdtemp creates the directory, but helm --untardir requires it to not
-    # exist yet (it creates the dir itself). Delete it after reserving the path.
-    tmp = tempfile.mkdtemp()
-    os.rmdir(tmp)
+    # Use a securely-created parent dir and pass a subdirectory to helm's
+    # --untardir (helm creates it). This avoids the mkdtemp→rmdir→reuse
+    # pattern which has a TOCTOU window where a symlink could be planted.
+    parent_tmp = tempfile.mkdtemp()
+    atexit.register(shutil.rmtree, parent_tmp, True)
+    tmp = os.path.join(parent_tmp, "chart")
 
     repo_added = None
 
@@ -74,23 +78,25 @@ def render_chart(chart_path, values=None):
 
 def push_chart(chart_path, target_registry, chart_target=None, insecure=False):
     pkg_dir = tempfile.mkdtemp()
-    run(["helm", "package", chart_path, "--destination", pkg_dir])
+    try:
+        run(["helm", "package", chart_path, "--destination", pkg_dir])
 
-    tgz_files = [f for f in os.listdir(pkg_dir) if f.endswith(".tgz")]
-    if not tgz_files:
-        raise Exception(f"helm package produced no .tgz file in {pkg_dir}")
-    tgz = os.path.join(pkg_dir, tgz_files[0])
+        tgz_files = [f for f in os.listdir(pkg_dir) if f.endswith(".tgz")]
+        if not tgz_files:
+            raise Exception(f"helm package produced no .tgz file in {pkg_dir}")
+        tgz = os.path.join(pkg_dir, tgz_files[0])
 
-    repo = chart_target if chart_target else f"oci://{target_registry}"
-    if not repo.startswith("oci://"):
-        repo = f"oci://{repo}"
+        repo = chart_target if chart_target else f"oci://{target_registry}"
+        if not repo.startswith("oci://"):
+            repo = f"oci://{repo}"
 
-    cmd = ["helm", "push", tgz, repo]
-    if insecure:
-        cmd.append("--insecure-skip-tls-verify")
-    run(cmd)
-    print(f"[INFO] Chart pushed: {os.path.basename(tgz)} -> {repo}")
-    os.remove(tgz)
+        cmd = ["helm", "push", tgz, repo]
+        if insecure:
+            cmd.append("--insecure-skip-tls-verify")
+        run(cmd)
+        print(f"[INFO] Chart pushed: {os.path.basename(tgz)} -> {repo}")
+    finally:
+        shutil.rmtree(pkg_dir, ignore_errors=True)
 
 
 def save_chart(chart_path, output_dir="."):
