@@ -2,7 +2,7 @@
 pyyaml==6.0.2
 
 # Build/Linting tools (Pinned for consistency)
-setuptools==69.0.3
+setuptools==78.1.1
 #Nuitka==4.0.5
 bandit==1.9.4
 pyinstaller==6.19.0
