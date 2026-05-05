@@ -1,0 +1,11 @@
+.git
+.github
+*.md
+__pycache__
+build/
+dist/
+test/
+tmp/
+virtenv
+*.spec
+*.sarif

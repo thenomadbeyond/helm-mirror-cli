@@ -35,5 +35,7 @@ RUN apk update && apk add --no-cache \
 
 COPY --from=builder /app/dist/helm-mirror /usr/local/bin/helm-mirror
 
+USER nonroot
+
 ENTRYPOINT ["/usr/local/bin/helm-mirror"]
 CMD ["--help"]
