@@ -54,6 +54,18 @@ def main():
         metavar="DIR",
         help="Destination directory for saved chart .tgz file (default: current directory). Only used with --save-chart.",
     )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of images to mirror concurrently (default: 1).",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip images that already exist in the target registry (crane only).",
+    )
 
     args = parser.parse_args()
 
@@ -76,6 +88,8 @@ def main():
         args.dry_run,
         save_dir=args.images_dir if args.save_images else None,
         insecure=args.insecure,
+        parallel=args.parallel,
+        skip_existing=args.skip_existing,
     )
 
     if args.image_list_file:
