@@ -122,6 +122,64 @@ docker run --rm \
   --push-chart
 ```
 
+## Docker Usage with Volume Mounts
+
+When running the Docker image, you may need to mount volumes for:
+- Local charts (if using `--chart` with a local path)
+- Output directories (for `--save-images`/`--images-dir` and `--save-chart`/`--chart-dir`)
+- Temporary storage (if the default `/tmp` is not writable or you want to persist temporary files)
+
+The image runs as a nonroot user (UID 1000). Ensure that any mounted directories are writable by this user.
+
+### Example: Using Local Charts and Saving Output
+
+```bash
+docker run --rm \
+  -v ~/.config/helm:/root/.config/helm:ro \
+  -v $(pwd)/local-charts:/charts:ro \
+  -v $(pwd)/output:/output:rw \
+  -v $(pwd)/tmp:/tmp:rw \
+  ghcr.io/thenomadbeyond/helm-mirror-cli:latest \
+  --chart /charts/my-chart \
+  --save-images --images-dir /output/images \
+  --save-chart --chart-dir /output/charts \
+  --target-registry my-registry.example.com \
+  --push-chart
+```
+
+### Explanation:
+- `-v $(pwd)/local-charts:/charts:ro`: Mount local charts directory as read-only at `/charts`
+- `-v $(pwd)/output:/output:rw`: Mount output directory as read-write at `/output`
+- `-v $(pwd)/tmp:/tmp:rw`: Mount temporary directory as read-write at `/tmp` (overrides the container's tmp)
+- The chart is then referenced as `/charts/my-chart`
+- Output directories are under `/output`
+- Temporary files (used for extracting charts, etc.) will be stored in `/tmp` on the host
+
+### Alternative: Setting TMPDIR Environment Variable
+
+If you prefer not to mount `/tmp`, you can set the `TMPDIR` environment variable to a writable mounted directory:
+
+```bash
+docker run --rm \
+  -v ~/.config/helm:/root/.config/helm:ro \
+  -v $(pwd)/local-charts:/charts:ro \
+  -v $(pwd)/output:/output:rw \
+  -v $(pwd)/tmp:/tmp:rw \
+  -e TMPDIR=/tmp \
+  ghcr.io/thenomadbeyond/helm-mirror-cli:latest \
+  --chart /charts/my-chart \
+  --save-images --images-dir /output/images \
+  --save-chart --chart-dir /output/charts \
+  --target-registry my-registry.example.com \
+  --push-chart
+```
+
+Note: The image already uses `/tmp` as the default temporary directory, so mounting a host directory to `/tmp` is often sufficient.
+
+### Important Notes
+- The nonroot user in the container has UID 1000. If you get permission errors, ensure the host directories are writable by UID 1000 (e.g., `chmod a+rw` or change ownership to 1000:1000).
+- For reading local charts, the mount can be read-only (`:ro`).
+- For writing output or temporary files, the mount must be read-write (`:rw`).
 ## CI/CD Pipelines
 
 | Workflow | Trigger | Description |
