@@ -211,6 +211,8 @@ docker run --rm helm-mirror-cli:local --help
 
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy and details on automated security scanning.
 
+The latest Docker image is automatically rebuilt every six hours to incorporate the latest security patches from the base image and dependencies.
+
 ## License
 
 Apache License 2.0. See LICENSE for details.
