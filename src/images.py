@@ -89,13 +89,19 @@ def extract_images(rendered_yaml, tools):
 
 
 def _image_exists(image, tools, insecure=False):
-    """Return True when the image already exists in the registry (crane only)."""
-    if tools.get("copy") != "crane":
-        return False
-    cmd = ["crane", "manifest", image]
-    if insecure:
-        cmd.append("--insecure")
-    return subprocess.run(cmd, capture_output=True).returncode == 0
+    """Return True when the image already exists in the registry."""
+    copy_tool = tools.get("copy")
+    if copy_tool == "crane":
+        cmd = ["crane", "manifest", image]
+        if insecure:
+            cmd.append("--insecure")
+        return subprocess.run(cmd, capture_output=True).returncode == 0
+    elif copy_tool == "skopeo":
+        cmd = ["skopeo", "inspect", f"docker://{image}"]
+        if insecure:
+            cmd.append("--tls-verify=false")
+        return subprocess.run(cmd, capture_output=True).returncode == 0
+    return False
 
 
 def mirror_images(
@@ -193,6 +199,13 @@ def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False):
         if insecure:
             cmd.append("--insecure")
         subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True)
+    elif tools["copy"] == "skopeo":
+        src = f"docker://{image}"
+        dst = f"docker-archive:{tar_path}"
+        cmd = ["skopeo", "copy"]
+        if insecure:
+            cmd += ["--src-tls-verify=false"]
+        subprocess.run(cmd + [src, dst], check=True)
     elif tools["copy"] == "docker":
         if insecure:
             print(
@@ -215,6 +228,11 @@ def copy_image(src, dst, tools, insecure=False):
         if insecure:
             cmd.append("--insecure")
         subprocess.run(cmd + [src, dst], check=True)
+    elif tools["copy"] == "skopeo":
+        cmd = ["skopeo", "copy"]
+        if insecure:
+            cmd += ["--src-tls-verify=false", "--dest-tls-verify=false"]
+        subprocess.run(cmd + [f"docker://{src}", f"docker://{dst}"], check=True)
     elif tools["copy"] == "docker":
         if insecure:
             print(

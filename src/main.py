@@ -22,6 +22,7 @@ def main():
         help=(
             "Allow insecure registries (HTTP or HTTPS with self-signed certs). "
             "For crane: passes --insecure. "
+            "For skopeo: passes --src-tls-verify=false / --dest-tls-verify=false. "
             "For podman: passes --tls-verify=false. "
             "For helm: passes --insecure-skip-tls-verify. "
             "For docker: prints a warning — configure insecure-registries in /etc/docker/daemon.json instead."

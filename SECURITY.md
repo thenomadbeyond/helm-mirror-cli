@@ -41,6 +41,10 @@ as SARIF reports, where they can be reviewed and tracked.
 
 - The Docker image is built on [`chainguard/wolfi-base`](https://github.com/chainguard-images/wolfi-base),
   a minimal, hardened base image with a low CVE surface area.
+  All installed packages are upgraded to their latest patched versions during the build.
+  `kubectl` is intentionally excluded from the image since it is not used by the tool,
+  reducing the attack surface.
+  The image includes `skopeo` as the preferred daemonless alternative to `docker`/`podman`.
 - The standalone Linux binary is built with [PyInstaller](https://pyinstaller.org/) on `ubuntu-latest`
   GitHub Actions runners and published directly as a GitHub Release asset.
 - All CI/CD workflows use pinned action versions and rely only on `GITHUB_TOKEN`

@@ -12,7 +12,7 @@ Designed for air-gapped environments or maintaining a local cache of external de
 - **Chart Pulling** — pulls and untars charts from remote repositories or local paths
 - **Image Discovery** — renders Helm templates to identify all container images
 - **Intelligent Extraction** — uses `yq` for precise extraction with a regex fallback
-- **Image Mirroring** — copies images via `crane`, `docker`, or `podman` (auto-detected)
+- **Image Mirroring** — copies images via `crane`, `skopeo`, `docker`, or `podman` (auto-detected; `skopeo` preferred over `docker`/`podman`)
 - **Local Save Mode** — save images as tar files or charts as `.tgz` without pushing to a registry
 - **Chart Mirroring** — packages and pushes the Helm chart to a target OCI registry
 - **Dry Run** — preview operations without executing network transfers
@@ -26,7 +26,8 @@ Designed for air-gapped environments or maintaining a local cache of external de
 | Helm | `^3.14` | Required |
 | yq | `^4.40` | Recommended — falls back to regex without it |
 | crane | `^0.19` | Preferred copy tool |
-| docker / podman | any | Alternative copy tools |
+| skopeo | `^1.13` | Second choice — daemonless, no container runtime required |
+| docker / podman | any | Fallback copy tools (require running daemon)
 
 ## Installation
 
