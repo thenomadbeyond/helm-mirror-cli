@@ -34,11 +34,11 @@ def main():
     )
     parser.add_argument(
         "--username",
-        help="Username for registry authentication (not yet implemented).",
+        help="Username for registry authentication.",
     )
     parser.add_argument(
         "--password",
-        help="Password for registry authentication (not yet implemented).",
+        help="Password for registry authentication.",
     )
     parser.add_argument(
         "--repo-url",
