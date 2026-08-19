@@ -29,6 +29,18 @@ def main():
         ),
     )
     parser.add_argument(
+        "--ca-cert",
+        help="Path to a custom CA certificate file to use for verifying registry certificates.",
+    )
+    parser.add_argument(
+        "--username",
+        help="Username for registry authentication (not yet implemented).",
+    )
+    parser.add_argument(
+        "--password",
+        help="Password for registry authentication (not yet implemented).",
+    )
+    parser.add_argument(
         "--repo-url",
         metavar="URL",
         help="Helm repository URL to add temporarily when --chart is just a chart name.",
@@ -89,6 +101,9 @@ def main():
         args.dry_run,
         save_dir=args.images_dir if args.save_images else None,
         insecure=args.insecure,
+        ca_cert=args.ca_cert,
+        username=args.username,
+        password=args.password,
         parallel=args.parallel,
         skip_existing=args.skip_existing,
     )

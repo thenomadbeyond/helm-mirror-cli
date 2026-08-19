@@ -88,19 +88,28 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
-def _image_exists(image, tools, insecure=False):
+def _image_exists(image, tools, insecure=False, ca_cert=None, username=None, password=None):
     """Return True when the image already exists in the registry."""
     copy_tool = tools.get("copy")
+    env = os.environ.copy()
+    if ca_cert and copy_tool in ("crane", "skopeo"):
+        env["SSL_CERT_FILE"] = ca_cert
+    elif ca_cert and copy_tool in ("docker", "podman"):
+        print(
+            f"[WARN] --ca-cert is not supported for {copy_tool}. "
+            "Configure the daemon's trust store for custom CAs."
+        )
+
     if copy_tool == "crane":
         cmd = ["crane", "manifest", image]
         if insecure:
             cmd.append("--insecure")
-        return subprocess.run(cmd, capture_output=True).returncode == 0
+        return subprocess.run(cmd, capture_output=True, env=env).returncode == 0
     elif copy_tool == "skopeo":
         cmd = ["skopeo", "inspect", f"docker://{image}"]
         if insecure:
             cmd.append("--tls-verify=false")
-        return subprocess.run(cmd, capture_output=True).returncode == 0
+        return subprocess.run(cmd, capture_output=True, env=env).returncode == 0
     return False
 
 
@@ -112,6 +121,9 @@ def mirror_images(
     dry_run=False,
     save_dir=None,
     insecure=False,
+    ca_cert=None,
+    username=None,
+    password=None,
     parallel=1,
     skip_existing=False,
 ):
@@ -120,17 +132,17 @@ def mirror_images(
 
     def _process(img):
         if save_dir is not None:
-            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure)
+            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure, ca_cert, username, password)
             print(f"[INFO] {img} -> {tar_path}")
             return tar_path
 
         new = rewrite_image(img, registry, prefix)
-        if skip_existing and not dry_run and _image_exists(new, tools, insecure):
+        if skip_existing and not dry_run and _image_exists(new, tools, insecure, ca_cert, username, password):
             print(f"[SKIP] {img} -> {new} (already exists)")
             return new
         print(f"[INFO] {img} -> {new}")
         if not dry_run:
-            copy_image(img, new, tools, insecure)
+            copy_image(img, new, tools, insecure, ca_cert, username, password)
         return new
 
     if parallel > 1:
@@ -187,25 +199,40 @@ def _image_to_filename(image):
     return f"{safe}.tar"
 
 
-def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False):
+def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, ca_cert=None, username=None, password=None):
     os.makedirs(output_dir, exist_ok=True)
     tar_path = os.path.join(output_dir, _image_to_filename(image))
 
     if dry_run:
         return tar_path
 
+    if username or password:
+        print(
+            "[WARN] Authentication via --username/--password is not yet implemented. "
+            "Please configure your Docker config file or use docker login beforehand."
+        )
+
+    env = os.environ.copy()
+    if ca_cert and tools["copy"] in ("crane", "skopeo"):
+        env["SSL_CERT_FILE"] = ca_cert
+    elif ca_cert and tools["copy"] in ("docker", "podman"):
+        print(
+            f"[WARN] --ca-cert is not supported for {tools['copy']}. "
+            "Configure the daemon's trust store for custom CAs."
+        )
+
     if tools["copy"] == "crane":
         cmd = ["crane", "pull"]
         if insecure:
             cmd.append("--insecure")
-        subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True)
+        subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True, env=env)
     elif tools["copy"] == "skopeo":
         src = f"docker://{image}"
         dst = f"docker-archive:{tar_path}"
         cmd = ["skopeo", "copy"]
         if insecure:
             cmd += ["--src-tls-verify=false"]
-        subprocess.run(cmd + [src, dst], check=True)
+        subprocess.run(cmd + [src, dst], check=True, env=env)
     elif tools["copy"] == "docker":
         if insecure:
             print(
@@ -222,17 +249,32 @@ def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False):
     return tar_path
 
 
-def copy_image(src, dst, tools, insecure=False):
+def copy_image(src, dst, tools, insecure=False, ca_cert=None, username=None, password=None):
+    if username or password:
+        print(
+            "[WARN] Authentication via --username/--password is not yet implemented. "
+            "Please configure your Docker config file or use docker login beforehand."
+        )
+
+    env = os.environ.copy()
+    if ca_cert and tools["copy"] in ("crane", "skopeo"):
+        env["SSL_CERT_FILE"] = ca_cert
+    elif ca_cert and tools["copy"] in ("docker", "podman"):
+        print(
+            f"[WARN] --ca-cert is not supported for {tools['copy']}. "
+            "Configure the daemon's trust store for custom CAs."
+        )
+
     if tools["copy"] == "crane":
         cmd = ["crane", "copy"]
         if insecure:
             cmd.append("--insecure")
-        subprocess.run(cmd + [src, dst], check=True)
+        subprocess.run(cmd + [src, dst], check=True, env=env)
     elif tools["copy"] == "skopeo":
         cmd = ["skopeo", "copy"]
         if insecure:
             cmd += ["--src-tls-verify=false", "--dest-tls-verify=false"]
-        subprocess.run(cmd + [f"docker://{src}", f"docker://{dst}"], check=True)
+        subprocess.run(cmd + [f"docker://{src}", f"docker://{dst}"], check=True, env=env)
     elif tools["copy"] == "docker":
         if insecure:
             print(
