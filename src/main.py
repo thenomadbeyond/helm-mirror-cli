@@ -1,8 +1,11 @@
 # mirror_tool/main.py
 import argparse
+import os
+import sys
 from helm import pull_chart, render_chart, push_chart, save_chart
 from images import extract_images, mirror_images, write_image_list
 from runtime import detect_tools
+from auth import registry_host
 
 
 def main():
@@ -34,11 +37,23 @@ def main():
     )
     parser.add_argument(
         "--username",
-        help="Username for registry authentication.",
+        help="Registry username (or set REGISTRY_USERNAME).",
     )
     parser.add_argument(
         "--password",
-        help="Password for registry authentication.",
+        help="Registry password. Visible in the process list and shell history; "
+        "prefer --password-stdin or REGISTRY_PASSWORD.",
+    )
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the registry password from the first line of stdin.",
+    )
+    parser.add_argument(
+        "--auth-registry",
+        metavar="HOST",
+        help="Registry the credentials are valid for (default: host of --target-registry). "
+        "Credentials are never sent to any other registry.",
     )
     parser.add_argument(
         "--repo-url",
@@ -85,9 +100,30 @@ def main():
     if not args.save_images and not args.target_registry:
         parser.error("--target-registry is required unless --save-images is used")
 
+    username = args.username or os.environ.get("REGISTRY_USERNAME")
+    password = os.environ.get("REGISTRY_PASSWORD")
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    elif args.password is not None:
+        print("[WARN] --password is visible to other local users; prefer --password-stdin or REGISTRY_PASSWORD.")
+        password = args.password
+    if (username is None) != (password is None):
+        parser.error("registry authentication needs both a username and a password")
+    if args.ca_cert and not os.path.isfile(args.ca_cert):
+        parser.error(f"--ca-cert file not found: {args.ca_cert}")
+
+    auth = {"ca_cert": args.ca_cert}
+    if password is not None:
+        auth_registry = args.auth_registry or (
+            registry_host(args.target_registry) if args.target_registry else None
+        )
+        if not auth_registry:
+            parser.error("--auth-registry is required when using credentials with --save-images")
+        auth.update(registry=auth_registry, username=username, password=password)
+
     tools = detect_tools()
 
-    chart_path = pull_chart(args.chart, args.version, args.repo_url, args.insecure)
+    chart_path = pull_chart(args.chart, args.version, args.repo_url, args.insecure, args.ca_cert)
     rendered = render_chart(chart_path, args.values)
 
     images = extract_images(rendered, tools)
@@ -101,9 +137,7 @@ def main():
         args.dry_run,
         save_dir=args.images_dir if args.save_images else None,
         insecure=args.insecure,
-        ca_cert=args.ca_cert,
-        username=args.username,
-        password=args.password,
+        auth=auth,
         parallel=args.parallel,
         skip_existing=args.skip_existing,
     )
@@ -114,7 +148,7 @@ def main():
     if args.save_chart:
         save_chart(chart_path, args.chart_dir)
     elif args.push_chart:
-        push_chart(chart_path, args.target_registry, args.chart_target, args.insecure)
+        push_chart(chart_path, args.target_registry, args.chart_target, args.insecure, auth)
 
 
 if __name__ == "__main__":

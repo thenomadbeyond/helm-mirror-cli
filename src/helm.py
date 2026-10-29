@@ -6,16 +6,18 @@ import shutil
 import atexit
 import os
 
+from auth import registry_env
 
-def run(cmd):
-    result = subprocess.run(cmd, capture_output=True, text=True)
+
+def run(cmd, env=None):
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         raise Exception(f"Command failed: {cmd_str}\n{result.stderr.strip()}")
     return result.stdout
 
 
-def pull_chart(chart, version=None, repo_url=None, insecure=False):
+def pull_chart(chart, version=None, repo_url=None, insecure=False, ca_cert=None):
     if os.path.isdir(chart):
         return chart
 
@@ -33,6 +35,11 @@ def pull_chart(chart, version=None, repo_url=None, insecure=False):
     atexit.register(shutil.rmtree, parent_tmp, True)
     tmp = os.path.join(parent_tmp, "chart")
 
+    with registry_env("helm", ca_cert=ca_cert) as env:
+        return _pull(chart, version, repo_url, insecure, tmp, env)
+
+
+def _pull(chart, version, repo_url, insecure, tmp, env):
     repo_added = None
 
     if repo_url:
@@ -40,8 +47,8 @@ def pull_chart(chart, version=None, repo_url=None, insecure=False):
         add_cmd = ["helm", "repo", "add", repo_name, repo_url]
         if insecure:
             add_cmd.append("--insecure-skip-tls-verify")
-        run(add_cmd)
-        run(["helm", "repo", "update", repo_name])
+        run(add_cmd, env)
+        run(["helm", "repo", "update", repo_name], env)
         repo_added = repo_name
         chart = f"{repo_name}/{chart}"
 
@@ -52,11 +59,11 @@ def pull_chart(chart, version=None, repo_url=None, insecure=False):
         cmd.append("--insecure-skip-tls-verify")
 
     try:
-        run(cmd)
+        run(cmd, env)
     finally:
         if repo_added:
             subprocess.run(
-                ["helm", "repo", "remove", repo_added], capture_output=True
+                ["helm", "repo", "remove", repo_added], capture_output=True, env=env
             )
 
     dirs = os.listdir(tmp)
@@ -76,7 +83,7 @@ def render_chart(chart_path, values=None):
     return run(cmd)
 
 
-def push_chart(chart_path, target_registry, chart_target=None, insecure=False):
+def push_chart(chart_path, target_registry, chart_target=None, insecure=False, auth=None):
     pkg_dir = tempfile.mkdtemp()
     try:
         run(["helm", "package", chart_path, "--destination", pkg_dir])
@@ -93,7 +100,8 @@ def push_chart(chart_path, target_registry, chart_target=None, insecure=False):
         cmd = ["helm", "push", tgz, repo]
         if insecure:
             cmd.append("--insecure-skip-tls-verify")
-        run(cmd)
+        with registry_env("helm", **(auth or {})) as env:
+            run(cmd, env)
         print(f"[INFO] Chart pushed: {os.path.basename(tgz)} -> {repo}")
     finally:
         shutil.rmtree(pkg_dir, ignore_errors=True)
