@@ -2,11 +2,31 @@
 import subprocess
 import re
 import os
-import tempfile
-import base64
-import json
+import time
+import fnmatch
 
 import yaml
+
+from auth import registry_env
+
+
+class _StringLoader(yaml.SafeLoader):
+    """SafeLoader that keeps numbers as strings.
+
+    Otherwise an unquoted `tag: 1.10` is parsed as the float 1.1 and the wrong
+    image tag would be mirrored.
+    """
+
+
+_StringLoader.yaml_implicit_resolvers = {
+    ch: [(tag, rx) for tag, rx in resolvers
+         if tag not in ("tag:yaml.org,2002:float", "tag:yaml.org,2002:int")]
+    for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+# Image refs come from untrusted charts and end up as command arguments, so
+# only accept plausible references (this also rejects values starting with "-").
+_IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
 
 
 def _walk_for_images(node, images):
@@ -51,81 +71,38 @@ def _walk_for_images(node, images):
                 _walk_for_images(value, images)
 
 
-def _get_registry_from_image(image):
-    """Extract registry hostname from image reference."""
-    # Handle various image formats:
-    # - registry/namespace/repo:tag
-    # - namespace/repo:tag (defaults to docker.io)
-    # - repo:tag (defaults to docker.io)
-    # - registry:port/namespace/repo:tag
-    if '/' not in image:
-        # No slash, could be just repo or repo:tag
-        if ':' in image and not image.startswith(('http://', 'https://')):
-            # Might be repo:tag
-            return 'docker.io'
-        else:
-            # Just repo (unlikely but handle)
-            return 'docker.io'
-    
-    # Split on first '/' to get potential registry
-    parts = image.split('/', 1)
-    first_part = parts[0]
-    
-    # If first part contains a dot or colon, it's likely a registry
-    if '.' in first_part or ':' in first_part:
-        return first_part
-    else:
-        # No dot or colon in first part, so it's likely a namespace (e.g., library, bitnami)
-        # Default to docker.io
-        return 'docker.io'
-
-
-def _create_docker_auth_config(username, password, registry=None):
-    """Create a Docker-style auth config for the given credentials.
-    
-    Returns a tuple of (temp_dir_path, env_dict) where:
-    - temp_dir_path: Path to temporary directory containing config.json
-    - env_dict: Environment variables to set (e.g., {'DOCKER_CONFIG': temp_dir_path})
-    """
-    if not username and not password:
-        return None, {}
-    
-    # Create temporary directory
-    temp_dir = tempfile.mkdtemp(prefix='helm-mirror-auth-')
-    
-    # Determine registry if not provided
-    if registry is None:
-        # We'll need to determine this from context - for now, require registry param
-        # This function will be called from context where we know the image
-        registry = 'docker.io'  # fallback
-    
-    # Create auth string
-    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-    
-    # Create Docker config structure
-    config = {
-        "auths": {
-            registry: {
-                "auth": auth
-            }
-        }
-    }
-    
-    # Write config.json
-    config_path = os.path.join(temp_dir, 'config.json')
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
-    
-    # Return temp dir and environment variables
-    return temp_dir, {"DOCKER_CONFIG": temp_dir}
-
-
 def extract_images(rendered_yaml, tools):
+    return _filter_valid(_extract_images(rendered_yaml, tools))
+
+
+def _filter_valid(images):
+    valid = set()
+    for img in images:
+        if _IMAGE_REF.match(img):
+            valid.add(img)
+        else:
+            print(f"[WARN] Ignoring invalid image reference: {img!r}")
+    return valid
+
+
+def filter_excluded(images, patterns):
+    """Drop images matching any fnmatch pattern (e.g. 'docker.io/bitnami/*')."""
+    kept = set()
+    for img in images:
+        hit = next((p for p in patterns if fnmatch.fnmatch(img, p)), None)
+        if hit:
+            print(f"[SKIP] {img} (excluded by {hit!r})")
+        else:
+            kept.add(img)
+    return kept
+
+
+def _extract_images(rendered_yaml, tools):
     images = set()
 
     # Try YAML parsing first — handles all known Helm image reference patterns
     try:
-        docs = list(yaml.safe_load_all(rendered_yaml))
+        docs = list(yaml.load_all(rendered_yaml, Loader=_StringLoader))
         _walk_for_images(docs, images)
         print("[INFO] Using YAML parsing for image extraction")
         return images
@@ -160,46 +137,34 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
-def _image_exists(image, tools, insecure=False, ca_cert=None, username=None, password=None):
+def _run_retry(cmd, env, retries):
+    """Run a command, retrying transient failures with exponential backoff."""
+    for attempt in range(retries + 1):
+        try:
+            return subprocess.run(cmd, check=True, env=env)
+        except subprocess.CalledProcessError:
+            if attempt == retries:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"[WARN] {cmd[0]} {cmd[1]} failed, retrying in {delay}s ({attempt + 1}/{retries})")
+            time.sleep(delay)
+
+
+def _image_exists(image, tools, insecure=False, auth=None):
     """Return True when the image already exists in the registry."""
-    copy_tool = tools.get("copy")
-    env = os.environ.copy()
-    
-    # Handle CA certificate
-    if ca_cert and copy_tool in ("crane", "skopeo"):
-        env["SSL_CERT_FILE"] = ca_cert
-    elif ca_cert and copy_tool in ("docker", "podman"):
-        print(
-            f"[WARN] --ca-cert is not supported for {copy_tool}. "
-            "Configure the daemon's trust store for custom CAs."
-        )
-    
-    # Handle authentication
-    auth_temp_dir = None
-    if username or password:
-        # Determine registry for auth
-        registry = _get_registry_from_image(image)
-        auth_temp_dir, auth_env = _create_docker_auth_config(username, password, registry)
-        if auth_temp_dir:
-            env.update(auth_env)
-    
-    try:
-        if copy_tool == "crane":
-            cmd = ["crane", "manifest", image]
-            if insecure:
-                cmd.append("--insecure")
-            return subprocess.run(cmd, capture_output=True, env=env).returncode == 0
-        elif copy_tool == "skopeo":
-            cmd = ["skopeo", "inspect", f"docker://{image}"]
-            if insecure:
-                cmd.append("--tls-verify=false")
-            return subprocess.run(cmd, capture_output=True, env=env).returncode == 0
+    tool = tools.get("copy")
+    if tool == "crane":
+        cmd = ["crane", "manifest", image]
+        if insecure:
+            cmd.append("--insecure")
+    elif tool == "skopeo":
+        cmd = ["skopeo", "inspect", f"docker://{image}"]
+        if insecure:
+            cmd.append("--tls-verify=false")
+    else:
         return False
-    finally:
-        # Clean up temporary auth directory
-        if auth_temp_dir and os.path.exists(auth_temp_dir):
-            import shutil
-            shutil.rmtree(auth_temp_dir, ignore_errors=True)
+    with registry_env(tool, **(auth or {})) as env:
+        return subprocess.run(cmd, capture_output=True, env=env).returncode == 0
 
 
 def mirror_images(
@@ -210,28 +175,27 @@ def mirror_images(
     dry_run=False,
     save_dir=None,
     insecure=False,
-    ca_cert=None,
-    username=None,
-    password=None,
+    auth=None,
     parallel=1,
     skip_existing=False,
+    retries=0,
 ):
     succeeded = []
     failed = []
 
     def _process(img):
         if save_dir is not None:
-            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure, ca_cert, username, password)
+            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure, auth, retries)
             print(f"[INFO] {img} -> {tar_path}")
             return tar_path
 
         new = rewrite_image(img, registry, prefix)
-        if skip_existing and not dry_run and _image_exists(new, tools, insecure, ca_cert, username, password):
+        if skip_existing and not dry_run and _image_exists(new, tools, insecure, auth):
             print(f"[SKIP] {img} -> {new} (already exists)")
             return new
         print(f"[INFO] {img} -> {new}")
         if not dry_run:
-            copy_image(img, new, tools, insecure, ca_cert, username, password)
+            copy_image(img, new, tools, insecure, auth, retries)
         return new
 
     if parallel > 1:
@@ -288,135 +252,63 @@ def _image_to_filename(image):
     return f"{safe}.tar"
 
 
-def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, ca_cert=None, username=None, password=None):
+def _warn_docker_insecure():
+    print(
+        "[WARN] --insecure has no effect for docker at the command level. "
+        "Add the registry to insecure-registries in /etc/docker/daemon.json."
+    )
+
+
+def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, auth=None, retries=0):
     os.makedirs(output_dir, exist_ok=True)
     tar_path = os.path.join(output_dir, _image_to_filename(image))
 
     if dry_run:
         return tar_path
 
-    if username or password:
-        # Authentication is handled via temporary Docker config
-        pass
-
-    env = os.environ.copy()
-    auth_temp_dir = None
-    
-    # Handle CA certificate
-    if ca_cert and tools["copy"] in ("crane", "skopeo"):
-        env["SSL_CERT_FILE"] = ca_cert
-    elif ca_cert and tools["copy"] in ("docker", "podman"):
-        print(
-            f"[WARN] --ca-cert is not supported for {tools['copy']}. "
-            "Configure the daemon's trust store for custom CAs."
-        )
-    
-    # Handle authentication
-    if username or password:
-        # Determine registry for auth
-        registry = _get_registry_from_image(image)
-        auth_temp_dir, auth_env = _create_docker_auth_config(username, password, registry)
-        if auth_temp_dir:
-            env.update(auth_env)
-
-    try:
-        if tools["copy"] == "crane":
-            cmd = ["crane", "pull"]
+    tool = tools["copy"]
+    tls = ["--tls-verify=false"] if insecure else []
+    with registry_env(tool, **(auth or {})) as env:
+        if tool == "crane":
+            cmd = ["crane", "pull"] + (["--insecure"] if insecure else [])
+            _run_retry(cmd + ["--format=tarball", image, tar_path], env, retries)
+        elif tool == "skopeo":
+            cmd = ["skopeo", "copy"] + (["--src-tls-verify=false"] if insecure else [])
+            _run_retry(cmd + [f"docker://{image}", f"docker-archive:{tar_path}"], env, retries)
+        elif tool == "docker":
             if insecure:
-                cmd.append("--insecure")
-            subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True, env=env)
-        elif tools["copy"] == "skopeo":
-            src = f"docker://{image}"
-            dst = f"docker-archive:{tar_path}"
-            cmd = ["skopeo", "copy"]
-            if insecure:
-                cmd += ["--src-tls-verify=false"]
-            subprocess.run(cmd + [src, dst], check=True, env=env)
-        elif tools["copy"] == "docker":
-            if insecure:
-                print(
-                    "[WARN] --insecure has no effect for docker at the command level. "
-                    "Add the registry to insecure-registries in /etc/docker/daemon.json."
-                )
-            subprocess.run(["docker", "pull", image], check=True)
-            subprocess.run(["docker", "save", image, "-o", tar_path], check=True)
+                _warn_docker_insecure()
+            _run_retry(["docker", "pull", image], env, retries)
+            _run_retry(["docker", "save", image, "-o", tar_path], env, retries)
         else:
-            tls = ["--tls-verify=false"] if insecure else []
-            subprocess.run(["podman", "pull"] + tls + [image], check=True)
-            subprocess.run(["podman", "save", image, "-o", tar_path], check=True)
-    finally:
-        # Clean up temporary auth directory
-        if auth_temp_dir and os.path.exists(auth_temp_dir):
-            import shutil
-            shutil.rmtree(auth_temp_dir, ignore_errors=True)
+            _run_retry(["podman", "pull"] + tls + [image], env, retries)
+            _run_retry(["podman", "save", image, "-o", tar_path], env, retries)
 
     return tar_path
 
 
-def copy_image(src, dst, tools, insecure=False, ca_cert=None, username=None, password=None):
-    if username or password:
-        # Authentication is handled via temporary Docker config
-        pass
-
-    env = os.environ.copy()
-    auth_temp_dirs = []  # Track temp dirs for cleanup
-    
-    # Handle CA certificate
-    if ca_cert and tools["copy"] in ("crane", "skopeo"):
-        env["SSL_CERT_FILE"] = ca_cert
-    elif ca_cert and tools["copy"] in ("docker", "podman"):
-        print(
-            f"[WARN] --ca-cert is not supported for {tools['copy']}. "
-            "Configure the daemon's trust store for custom CAs."
-        )
-    
-    # Handle authentication - need auth for both source and destination
-    if username or password:
-        # Create auth for source image
-        src_registry = _get_registry_from_image(src)
-        src_auth_temp_dir, src_auth_env = _create_docker_auth_config(username, password, src_registry)
-        if src_auth_temp_dir:
-            auth_temp_dirs.append(src_auth_temp_dir)
-            env.update(src_auth_env)
-        
-        # Create auth for destination image (may be same credentials)
-        dst_registry = _get_registry_from_image(dst)
-        dst_auth_temp_dir, dst_auth_env = _create_docker_auth_config(username, password, dst_registry)
-        if dst_auth_temp_dir:
-            auth_temp_dirs.append(dst_auth_temp_dir)
-            env.update(dst_auth_env)
-
-    try:
-        if tools["copy"] == "crane":
-            cmd = ["crane", "copy"]
-            if insecure:
-                cmd.append("--insecure")
-            subprocess.run(cmd + [src, dst], check=True, env=env)
-        elif tools["copy"] == "skopeo":
+def copy_image(src, dst, tools, insecure=False, auth=None, retries=0):
+    tool = tools["copy"]
+    tls = ["--tls-verify=false"] if insecure else []
+    with registry_env(tool, **(auth or {})) as env:
+        if tool == "crane":
+            cmd = ["crane", "copy"] + (["--insecure"] if insecure else [])
+            _run_retry(cmd + [src, dst], env, retries)
+        elif tool == "skopeo":
             cmd = ["skopeo", "copy"]
             if insecure:
                 cmd += ["--src-tls-verify=false", "--dest-tls-verify=false"]
-            subprocess.run(cmd + [f"docker://{src}", f"docker://{dst}"], check=True, env=env)
-        elif tools["copy"] == "docker":
+            _run_retry(cmd + [f"docker://{src}", f"docker://{dst}"], env, retries)
+        elif tool == "docker":
             if insecure:
-                print(
-                    "[WARN] --insecure has no effect for docker at the command level. "
-                    "Add the registry to insecure-registries in /etc/docker/daemon.json."
-                )
-            subprocess.run(["docker", "pull", src], check=True)
-            subprocess.run(["docker", "tag", src, dst], check=True)
-            subprocess.run(["docker", "push", dst], check=True)
+                _warn_docker_insecure()
+            _run_retry(["docker", "pull", src], env, retries)
+            _run_retry(["docker", "tag", src, dst], env, retries)
+            _run_retry(["docker", "push", dst], env, retries)
         else:
-            tls = ["--tls-verify=false"] if insecure else []
-            subprocess.run(["podman", "pull"] + tls + [src], check=True)
-            subprocess.run(["podman", "tag", src, dst], check=True)
-            subprocess.run(["podman", "push"] + tls + [dst], check=True)
-    finally:
-        # Clean up temporary auth directories
-        for auth_temp_dir in auth_temp_dirs:
-            if auth_temp_dir and os.path.exists(auth_temp_dir):
-                import shutil
-                shutil.rmtree(auth_temp_dir, ignore_errors=True)
+            _run_retry(["podman", "pull"] + tls + [src], env, retries)
+            _run_retry(["podman", "tag", src, dst], env, retries)
+            _run_retry(["podman", "push"] + tls + [dst], env, retries)
 
 
 def write_image_list(images, path):

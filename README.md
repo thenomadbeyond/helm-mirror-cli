@@ -26,7 +26,7 @@ Designed for air-gapped environments or maintaining a local cache of external de
 | Helm | `^3.14` | Required |
 | yq | `^4.40` | Recommended — falls back to regex without it |
 | crane | `^0.19` | Preferred copy tool |
-| skopeo | `^1.13` | Second choice — daemonless, no container runtime required |
+| skopeo | `^1.13` | Second choice — daemonless, no container runtime required (not included in the Docker image, which uses `crane`) |
 | docker / podman | any | Fallback copy tools (require running daemon)
 
 ## Installation
@@ -111,11 +111,34 @@ helm-mirror \
   --dry-run
 ```
 
+**Faster, more robust runs:**
+
+```bash
+helm-mirror \
+  --chart bitnami/nginx \
+  --target-registry registry.internal.corp \
+  --parallel 4 --skip-existing --retries 3 \
+  --exclude-image 'docker.io/bitnami/os-shell*'
+```
+
+`--retries N` retries failed copies with exponential backoff, `--exclude-image` takes a glob and can be repeated, and image references from the chart that look malformed (for example starting with `-`) are ignored instead of being passed to the copy tool.
+
+**Authenticate against the target registry:**
+
+```bash
+echo "$REGISTRY_PASSWORD" | helm-mirror \
+  --chart bitnami/nginx \
+  --target-registry registry.internal.corp \
+  --username ci-bot --password-stdin \
+  --ca-cert /etc/ssl/internal-ca.pem
+```
+
+Credentials can also come from `REGISTRY_USERNAME` / `REGISTRY_PASSWORD`. Avoid `--password`, which is visible in the process list. Credentials are only valid for the host of `--target-registry` (override with `--auth-registry`) and are never sent to the source registries. `--ca-cert` is added on top of the system trust store (not supported for `docker`/`podman`).
+
 **Run via Docker:**
 
 ```bash
 docker run --rm \
-  -v ~/.config/helm:/root/.config/helm:ro \
   ghcr.io/thenomadbeyond/helm-mirror-cli:latest \
   --chart bitnami/nginx \
   --target-registry registry.internal.corp \
@@ -129,13 +152,12 @@ When running the Docker image, you may need to mount volumes for:
 - Output directories (for `--save-images`/`--images-dir` and `--save-chart`/`--chart-dir`)
 - Temporary storage (if the default `/tmp` is not writable or you want to persist temporary files)
 
-The image runs as a nonroot user (UID 1000). Ensure that any mounted directories are writable by this user.
+The image runs as a nonroot user (UID 65532). Ensure that any mounted directories are writable by this user.
 
 ### Example: Using Local Charts and Saving Output
 
 ```bash
 docker run --rm \
-  -v ~/.config/helm:/root/.config/helm:ro \
   -v $(pwd)/local-charts:/charts:ro \
   -v $(pwd)/output:/output:rw \
   -v $(pwd)/tmp:/tmp:rw \
@@ -161,7 +183,6 @@ If you prefer not to mount `/tmp`, you can set the `TMPDIR` environment variable
 
 ```bash
 docker run --rm \
-  -v ~/.config/helm:/root/.config/helm:ro \
   -v $(pwd)/local-charts:/charts:ro \
   -v $(pwd)/output:/output:rw \
   -v $(pwd)/tmp:/tmp:rw \
@@ -177,7 +198,7 @@ docker run --rm \
 Note: The image already uses `/tmp` as the default temporary directory, so mounting a host directory to `/tmp` is often sufficient.
 
 ### Important Notes
-- The nonroot user in the container has UID 1000. If you get permission errors, ensure the host directories are writable by UID 1000 (e.g., `chmod a+rw` or change ownership to 1000:1000).
+- The nonroot user in the container has UID 65532. If you get permission errors, ensure the host directories are writable by UID 65532 (e.g., `chmod a+rw` or change ownership to 65532:65532).
 - For reading local charts, the mount can be read-only (`:ro`).
 - For writing output or temporary files, the mount must be read-write (`:rw`).
 ## CI/CD Pipelines
@@ -195,7 +216,7 @@ Security findings are uploaded as SARIF reports to the [GitHub Security tab](htt
 **Binary:**
 
 ```bash
-pip install pyinstaller
+pip install -r requirements.txt -r requirements-build.txt
 pyinstaller --onefile -n helm-mirror src/main.py
 # output: dist/helm-mirror
 ```
@@ -212,6 +233,17 @@ docker run --rm helm-mirror-cli:local --help
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy and details on automated security scanning.
 
 The latest Docker image is automatically rebuilt every six hours to incorporate the latest security patches from the base image and dependencies.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest        # unit tests
+bandit -ll -r src       # static security checks
+pip-audit -r requirements.txt -r requirements-build.txt -r requirements-dev.txt
+```
+
+CI runs these on every pull request. GitHub Actions and the Docker base image are updated by Dependabot; all actions are pinned to commit SHAs.
 
 ## License
 

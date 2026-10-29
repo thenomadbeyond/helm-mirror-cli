@@ -44,8 +44,16 @@ as SARIF reports, where they can be reviewed and tracked.
   All installed packages are upgraded to their latest patched versions during the build.
   `kubectl` is intentionally excluded from the image since it is not used by the tool,
   reducing the attack surface.
-  The image includes `skopeo` as the preferred daemonless alternative to `docker`/`podman`.
+  `skopeo` is intentionally not part of the image: `crane` covers all copy operations there and `skopeo`
+  only added unused attack surface. On a host install, `skopeo` is still supported as a copy tool.
 - The standalone Linux binary is built with [PyInstaller](https://pyinstaller.org/) on `ubuntu-latest`
   GitHub Actions runners and published directly as a GitHub Release asset.
 - All CI/CD workflows use pinned action versions and rely only on `GITHUB_TOKEN`
   with least-privilege permissions — no external secrets are required.
+
+- Registry credentials are written to a private temporary config that only contains the target registry
+  (never the source registries) and are removed after each command. Prefer `--password-stdin` or
+  `REGISTRY_PASSWORD` over `--password`.
+- Image references taken from charts are validated before they are used as command arguments.
+- The Docker image and the scheduled `latest` rebuild are only pushed after a smoke test and a Trivy scan
+  without fixable HIGH/CRITICAL findings.
