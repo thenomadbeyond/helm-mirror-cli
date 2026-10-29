@@ -38,8 +38,7 @@ RUN : "${APK_REFRESH}" && apk update && \
     apk add --no-cache \
     helm \
     yq \
-    crane \
-    skopeo && \
+    crane && \
     rm -rf /var/cache/apk/*
 
 COPY --from=builder /app/dist/helm-mirror /usr/local/bin/helm-mirror

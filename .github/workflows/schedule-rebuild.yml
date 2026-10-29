@@ -50,7 +50,7 @@ jobs:
           IMAGE=ghcr.io/${{ github.repository }}:latest
           docker run --rm "$IMAGE" --help > /dev/null
           docker run --rm --entrypoint sh "$IMAGE" -c \
-            'test "$(id -u)" != 0 && helm version --short && crane version && skopeo --version && yq --version'
+            'test "$(id -u)" != 0 && helm version --short && crane version && yq --version'
 
       # Never replace a working :latest with an image that has a fixable HIGH/CRITICAL CVE.
       - name: Scan image with Trivy

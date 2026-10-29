@@ -68,7 +68,7 @@ jobs:
         run: |
           docker run --rm "$IMAGE" --help > /dev/null
           docker run --rm --entrypoint sh "$IMAGE" -c \
-            'test "$(id -u)" != 0 && helm version --short && crane version && skopeo --version && yq --version'
+            'test "$(id -u)" != 0 && helm version --short && crane version && yq --version'
 
       - name: Scan Docker image with Trivy (SARIF report)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

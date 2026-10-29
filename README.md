@@ -26,7 +26,7 @@ Designed for air-gapped environments or maintaining a local cache of external de
 | Helm | `^3.14` | Required |
 | yq | `^4.40` | Recommended — falls back to regex without it |
 | crane | `^0.19` | Preferred copy tool |
-| skopeo | `^1.13` | Second choice — daemonless, no container runtime required |
+| skopeo | `^1.13` | Second choice — daemonless, no container runtime required (not included in the Docker image, which uses `crane`) |
 | docker / podman | any | Fallback copy tools (require running daemon)
 
 ## Installation
