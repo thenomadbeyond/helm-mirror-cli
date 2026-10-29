@@ -26,8 +26,12 @@ RUN pyinstaller --onefile -n helm-mirror src/main.py
 # Stage 2: Final image - Contains only the runtime dependencies and the built binary
 FROM docker.io/chainguard/wolfi-base
 
+# Changing APK_REFRESH (CI passes the run id) invalidates this layer so that
+# `apk upgrade` is never served from a stale build cache.
+ARG APK_REFRESH=0
+
 # Remove version pins from world file to allow upgrades, then upgrade all packages
-RUN apk update && \
+RUN : "${APK_REFRESH}" && apk update && \
     # Remove specific version pins for security-critical packages to allow upgrades
     sed -i '/^glibc=/d; /^glibc-locale-posix=/d; /^ld-linux=/d; /^libcrypt1=/d; /^libcrypto3=/d; /^libssl3=/d' /etc/apk/world && \
     apk upgrade -a && \
