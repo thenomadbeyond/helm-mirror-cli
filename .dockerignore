@@ -1,11 +1,14 @@
+*.md
+*.sarif
+*.spec
 .git
 .github
-*.md
 __pycache__
 build/
 dist/
+pytest.ini
+requirements-dev.txt
 test/
+tests/
 tmp/
 virtenv
-*.spec
-*.sarif

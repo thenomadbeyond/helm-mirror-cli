@@ -1,0 +1,3 @@
+# Build tooling for the standalone binary (not shipped)
+setuptools==84.2.1
+pyinstaller==6.22.3

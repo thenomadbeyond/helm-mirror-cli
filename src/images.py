@@ -2,10 +2,31 @@
 import subprocess
 import re
 import os
+import time
+import fnmatch
 
 import yaml
 
 from auth import registry_env
+
+
+class _StringLoader(yaml.SafeLoader):
+    """SafeLoader that keeps numbers as strings.
+
+    Otherwise an unquoted `tag: 1.10` is parsed as the float 1.1 and the wrong
+    image tag would be mirrored.
+    """
+
+
+_StringLoader.yaml_implicit_resolvers = {
+    ch: [(tag, rx) for tag, rx in resolvers
+         if tag not in ("tag:yaml.org,2002:float", "tag:yaml.org,2002:int")]
+    for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+# Image refs come from untrusted charts and end up as command arguments, so
+# only accept plausible references (this also rejects values starting with "-").
+_IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$")
 
 
 def _walk_for_images(node, images):
@@ -51,11 +72,37 @@ def _walk_for_images(node, images):
 
 
 def extract_images(rendered_yaml, tools):
+    return _filter_valid(_extract_images(rendered_yaml, tools))
+
+
+def _filter_valid(images):
+    valid = set()
+    for img in images:
+        if _IMAGE_REF.match(img):
+            valid.add(img)
+        else:
+            print(f"[WARN] Ignoring invalid image reference: {img!r}")
+    return valid
+
+
+def filter_excluded(images, patterns):
+    """Drop images matching any fnmatch pattern (e.g. 'docker.io/bitnami/*')."""
+    kept = set()
+    for img in images:
+        hit = next((p for p in patterns if fnmatch.fnmatch(img, p)), None)
+        if hit:
+            print(f"[SKIP] {img} (excluded by {hit!r})")
+        else:
+            kept.add(img)
+    return kept
+
+
+def _extract_images(rendered_yaml, tools):
     images = set()
 
     # Try YAML parsing first — handles all known Helm image reference patterns
     try:
-        docs = list(yaml.safe_load_all(rendered_yaml))
+        docs = list(yaml.load_all(rendered_yaml, Loader=_StringLoader))
         _walk_for_images(docs, images)
         print("[INFO] Using YAML parsing for image extraction")
         return images
@@ -90,6 +137,19 @@ def extract_images(rendered_yaml, tools):
     return images
 
 
+def _run_retry(cmd, env, retries):
+    """Run a command, retrying transient failures with exponential backoff."""
+    for attempt in range(retries + 1):
+        try:
+            return subprocess.run(cmd, check=True, env=env)
+        except subprocess.CalledProcessError:
+            if attempt == retries:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"[WARN] {cmd[0]} {cmd[1]} failed, retrying in {delay}s ({attempt + 1}/{retries})")
+            time.sleep(delay)
+
+
 def _image_exists(image, tools, insecure=False, auth=None):
     """Return True when the image already exists in the registry."""
     tool = tools.get("copy")
@@ -118,13 +178,14 @@ def mirror_images(
     auth=None,
     parallel=1,
     skip_existing=False,
+    retries=0,
 ):
     succeeded = []
     failed = []
 
     def _process(img):
         if save_dir is not None:
-            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure, auth)
+            tar_path = save_image_as_tar(img, save_dir, tools, dry_run, insecure, auth, retries)
             print(f"[INFO] {img} -> {tar_path}")
             return tar_path
 
@@ -134,7 +195,7 @@ def mirror_images(
             return new
         print(f"[INFO] {img} -> {new}")
         if not dry_run:
-            copy_image(img, new, tools, insecure, auth)
+            copy_image(img, new, tools, insecure, auth, retries)
         return new
 
     if parallel > 1:
@@ -198,7 +259,7 @@ def _warn_docker_insecure():
     )
 
 
-def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, auth=None):
+def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, auth=None, retries=0):
     os.makedirs(output_dir, exist_ok=True)
     tar_path = os.path.join(output_dir, _image_to_filename(image))
 
@@ -210,44 +271,44 @@ def save_image_as_tar(image, output_dir, tools, dry_run=False, insecure=False, a
     with registry_env(tool, **(auth or {})) as env:
         if tool == "crane":
             cmd = ["crane", "pull"] + (["--insecure"] if insecure else [])
-            subprocess.run(cmd + ["--format=tarball", image, tar_path], check=True, env=env)
+            _run_retry(cmd + ["--format=tarball", image, tar_path], env, retries)
         elif tool == "skopeo":
             cmd = ["skopeo", "copy"] + (["--src-tls-verify=false"] if insecure else [])
-            subprocess.run(cmd + [f"docker://{image}", f"docker-archive:{tar_path}"], check=True, env=env)
+            _run_retry(cmd + [f"docker://{image}", f"docker-archive:{tar_path}"], env, retries)
         elif tool == "docker":
             if insecure:
                 _warn_docker_insecure()
-            subprocess.run(["docker", "pull", image], check=True, env=env)
-            subprocess.run(["docker", "save", image, "-o", tar_path], check=True, env=env)
+            _run_retry(["docker", "pull", image], env, retries)
+            _run_retry(["docker", "save", image, "-o", tar_path], env, retries)
         else:
-            subprocess.run(["podman", "pull"] + tls + [image], check=True, env=env)
-            subprocess.run(["podman", "save", image, "-o", tar_path], check=True, env=env)
+            _run_retry(["podman", "pull"] + tls + [image], env, retries)
+            _run_retry(["podman", "save", image, "-o", tar_path], env, retries)
 
     return tar_path
 
 
-def copy_image(src, dst, tools, insecure=False, auth=None):
+def copy_image(src, dst, tools, insecure=False, auth=None, retries=0):
     tool = tools["copy"]
     tls = ["--tls-verify=false"] if insecure else []
     with registry_env(tool, **(auth or {})) as env:
         if tool == "crane":
             cmd = ["crane", "copy"] + (["--insecure"] if insecure else [])
-            subprocess.run(cmd + [src, dst], check=True, env=env)
+            _run_retry(cmd + [src, dst], env, retries)
         elif tool == "skopeo":
             cmd = ["skopeo", "copy"]
             if insecure:
                 cmd += ["--src-tls-verify=false", "--dest-tls-verify=false"]
-            subprocess.run(cmd + [f"docker://{src}", f"docker://{dst}"], check=True, env=env)
+            _run_retry(cmd + [f"docker://{src}", f"docker://{dst}"], env, retries)
         elif tool == "docker":
             if insecure:
                 _warn_docker_insecure()
-            subprocess.run(["docker", "pull", src], check=True, env=env)
-            subprocess.run(["docker", "tag", src, dst], check=True, env=env)
-            subprocess.run(["docker", "push", dst], check=True, env=env)
+            _run_retry(["docker", "pull", src], env, retries)
+            _run_retry(["docker", "tag", src, dst], env, retries)
+            _run_retry(["docker", "push", dst], env, retries)
         else:
-            subprocess.run(["podman", "pull"] + tls + [src], check=True, env=env)
-            subprocess.run(["podman", "tag", src, dst], check=True, env=env)
-            subprocess.run(["podman", "push"] + tls + [dst], check=True, env=env)
+            _run_retry(["podman", "pull"] + tls + [src], env, retries)
+            _run_retry(["podman", "tag", src, dst], env, retries)
+            _run_retry(["podman", "push"] + tls + [dst], env, retries)
 
 
 def write_image_list(images, path):

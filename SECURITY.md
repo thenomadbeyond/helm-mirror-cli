@@ -49,3 +49,10 @@ as SARIF reports, where they can be reviewed and tracked.
   GitHub Actions runners and published directly as a GitHub Release asset.
 - All CI/CD workflows use pinned action versions and rely only on `GITHUB_TOKEN`
   with least-privilege permissions — no external secrets are required.
+
+- Registry credentials are written to a private temporary config that only contains the target registry
+  (never the source registries) and are removed after each command. Prefer `--password-stdin` or
+  `REGISTRY_PASSWORD` over `--password`.
+- Image references taken from charts are validated before they are used as command arguments.
+- The Docker image and the scheduled `latest` rebuild are only pushed after a smoke test and a Trivy scan
+  without fixable HIGH/CRITICAL findings.

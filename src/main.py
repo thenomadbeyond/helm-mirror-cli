@@ -3,7 +3,7 @@ import argparse
 import os
 import sys
 from helm import pull_chart, render_chart, push_chart, save_chart
-from images import extract_images, mirror_images, write_image_list
+from images import extract_images, filter_excluded, mirror_images, write_image_list
 from runtime import detect_tools
 from auth import registry_host
 
@@ -90,6 +90,20 @@ def main():
         help="Number of images to mirror concurrently (default: 1).",
     )
     parser.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Retry failed image copies N times with exponential backoff (default: 2).",
+    )
+    parser.add_argument(
+        "--exclude-image",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="Skip images matching this glob (repeatable), e.g. 'docker.io/bitnami/*'.",
+    )
+    parser.add_argument(
         "--skip-existing",
         action="store_true",
         help="Skip images that already exist in the target registry (crane only).",
@@ -109,6 +123,8 @@ def main():
         password = args.password
     if (username is None) != (password is None):
         parser.error("registry authentication needs both a username and a password")
+    if args.parallel < 1 or args.retries < 0:
+        parser.error("--parallel must be >= 1 and --retries >= 0")
     if args.ca_cert and not os.path.isfile(args.ca_cert):
         parser.error(f"--ca-cert file not found: {args.ca_cert}")
 
@@ -126,7 +142,7 @@ def main():
     chart_path = pull_chart(args.chart, args.version, args.repo_url, args.insecure, args.ca_cert)
     rendered = render_chart(chart_path, args.values)
 
-    images = extract_images(rendered, tools)
+    images = filter_excluded(extract_images(rendered, tools), args.exclude_image)
     print(f"[INFO] Found {len(images)} images")
 
     mirrored = mirror_images(
@@ -140,6 +156,7 @@ def main():
         auth=auth,
         parallel=args.parallel,
         skip_existing=args.skip_existing,
+        retries=args.retries,
     )
 
     if args.image_list_file:

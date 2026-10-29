@@ -111,6 +111,18 @@ helm-mirror \
   --dry-run
 ```
 
+**Faster, more robust runs:**
+
+```bash
+helm-mirror \
+  --chart bitnami/nginx \
+  --target-registry registry.internal.corp \
+  --parallel 4 --skip-existing --retries 3 \
+  --exclude-image 'docker.io/bitnami/os-shell*'
+```
+
+`--retries N` retries failed copies with exponential backoff, `--exclude-image` takes a glob and can be repeated, and image references from the chart that look malformed (for example starting with `-`) are ignored instead of being passed to the copy tool.
+
 **Authenticate against the target registry:**
 
 ```bash
@@ -204,7 +216,7 @@ Security findings are uploaded as SARIF reports to the [GitHub Security tab](htt
 **Binary:**
 
 ```bash
-pip install pyinstaller
+pip install -r requirements.txt -r requirements-build.txt
 pyinstaller --onefile -n helm-mirror src/main.py
 # output: dist/helm-mirror
 ```
@@ -221,6 +233,17 @@ docker run --rm helm-mirror-cli:local --help
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy and details on automated security scanning.
 
 The latest Docker image is automatically rebuilt every six hours to incorporate the latest security patches from the base image and dependencies.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest        # unit tests
+bandit -ll -r src       # static security checks
+pip-audit -r requirements.txt -r requirements-build.txt -r requirements-dev.txt
+```
+
+CI runs these on every pull request. GitHub Actions and the Docker base image are updated by Dependabot; all actions are pinned to commit SHAs.
 
 ## License
 

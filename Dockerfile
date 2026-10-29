@@ -16,8 +16,8 @@ RUN apk update && apk add --no-cache \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-build.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt -r requirements-build.txt
 
 COPY src/ src/
 
